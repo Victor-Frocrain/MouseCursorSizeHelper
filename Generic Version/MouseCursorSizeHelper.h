@@ -113,7 +113,7 @@ private:
     static void ScaleCursorSizeByDPI(std::pair<float, float>* CursorSize);
     static float GetMouseCursorScale();
     static float GetDPIScale();
-    static void CeilPair(std::pair<float, float>* pair);
+    static void CeilPair(std::pair<float, float>* Pair);
     static float GetRegistryValueFloat(const LPCSTR& RegLocation, const LPCSTR& RegKey, const float& DefaultValue);
     static std::string GetRegistryValueString(const LPCSTR& RegLocation, const LPCSTR& RegKey);
     static std::string GetValueOfEnvVariable(const std::string& EnvName);

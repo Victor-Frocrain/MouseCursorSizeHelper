@@ -8,28 +8,36 @@
 
 #include "MouseCursorSizeHelper.h"
 
-/**
- * Get the real current mouse cursor size with scales.
- *
- * @return The pair of the real mouse cursor width and height.
- */
+#include <stdint.h>
+
+ /**
+  * Get the real current mouse cursor size with scales.
+  *
+  * @return The pair of the real mouse cursor width and height.
+  */
 FVector2f UMouseCursorSizeHelper::GetCurrentMouseCursorSize()
 {
-	int Width = DEFAULT_IMAGE_CURSOR_SIZE;
-	int Height = DEFAULT_IMAGE_CURSOR_SIZE;
-	TArray<uint8> BitsArray = GetBitsArrayOfCurrentMouseImage(&Width, &Height);
+	FSizedata SizeData;
+	SizeData.width = DEFAULT_IMAGE_CURSOR_SIZE;
+	SizeData.height = DEFAULT_IMAGE_CURSOR_SIZE;
+	SizeData.isRealSize = false;
+
+	TArray<uint32> PixelArray = GetPixelArrayOfCurrentMouseImage(&SizeData);
 
 	// Compute the origin real size of mouse cursor
-	FVector2f CursorSize = ComputeCursorSizeFromBitsArray(BitsArray, Width, Height);
+	FVector2f CursorSize = ComputeCursorSizeFromPixelArray(PixelArray, SizeData);
 
-	// Scale mouse cursor size by DPI
-	ScaleCursorSizeByDPI(&CursorSize);
+	if (!SizeData.isRealSize)
+	{
+		// Scale mouse cursor size by DPI
+		ScaleCursorSizeByDPI(&CursorSize);
 
-	// Scale mouse cursor size by defined system mouse size
-	ScaleCursorSizeByMouseSystemScale(&CursorSize);
+		// Scale mouse cursor size by defined system mouse size
+		ScaleCursorSizeByMouseSystemScale(&CursorSize);
+	}
 
 	// Ceil mouse cursor size
-	CeilPair(&CursorSize);
+	CeilVector2f(&CursorSize);
 
 	return CursorSize;
 }
@@ -39,114 +47,239 @@ FVector2f UMouseCursorSizeHelper::GetCurrentMouseCursorSize()
  *
  * @return The initialized FirstLastIndexes structure.
  */
-FirstLastIndexesStruct UMouseCursorSizeHelper::InitFirstLastIndexesStruct()
+UMouseCursorSizeHelper::FFirstlastindexes UMouseCursorSizeHelper::InitFirstLastIndexesStruct()
 {
-	FirstLastIndexesStruct IndexesStruct;
+	FFirstlastindexes IndexesStruct;
 
-	IndexesStruct.LastYValue = -1; // Negative value to take first line in account for height calculation
-	IndexesStruct.FirstIndexHeight = 0;
-	IndexesStruct.LastIndexHeight = 0;
-	IndexesStruct.FirstIndexWidth = 0;
-	IndexesStruct.LastIndexWidth = 0;
-	IndexesStruct.IsFirstIndexHeightFound = false;
-	IndexesStruct.IsFirstIndexWidthFound = false;
+	IndexesStruct.lastYValue = -1; // Negative value to take first line in account for height calculation
+	IndexesStruct.firstIndexHeight = 0;
+	IndexesStruct.lastIndexHeight = 0;
+	IndexesStruct.firstIndexWidth = 0;
+	IndexesStruct.lastIndexWidth = 0;
+	IndexesStruct.isFirstIndexHeightFound = false;
+	IndexesStruct.isFirstIndexWidthFound = false;
 
 	return IndexesStruct;
 }
 
 /**
- * Get bits array of mouse cursor image from its BITMAP with Windows library.
+ * Get the index of the smallest frame in array of pictures.
  *
- * @param Width the width of cursor mouse image.
- * @param Height the height of cursor mouse image.
- * @return The bits array of the mouse cursor image.
+ * @param Pictures the array of pictures.
+ * @return The index of the smallest frame in array of pictures.
  */
-TArray<uint8> UMouseCursorSizeHelper::GetBitsArrayOfCurrentMouseImage(int* Width, int* Height)
+int UMouseCursorSizeHelper::GetIndexOfSmallestPicture(const TArray<FIcondirentry>& Pictures)
 {
-	TArray<uint8> BitsArray = {};
+	int Index = -1;
+	uint64 ImageSize = 0xffffffffffffffff; // The MAX value of uint64
 
-#ifdef _WIN32
-	ICONINFO IconInfo;
-	BITMAP Bitmap;
-
-	// Get mouse icon informations
-	GetIconInfo(LoadCursor(NULL, IDC_ARROW), &IconInfo);
-
-	// Get the device context (HDC)
-	HDC Hdc = GetDC(NULL);
-
-	if (Hdc != NULL)
+	for (int i = 0; i < Pictures.Num(); i++)
 	{
-		if (GetObject(IconInfo.hbmColor, sizeof(BITMAP), &Bitmap) != 0)
+		uint64 EntrySize = uint64(Pictures[i].bWidth * Pictures[i].bHeight);
+		if (ImageSize > EntrySize)
 		{
-			// Size of Bitmap
-			*Width = Bitmap.bmWidth;
-			*Height = Bitmap.bmHeight;
-
-			// Resize the array of data bits
-			BitsArray.Reserve((*Width) * (*Height) * BYTES_PER_PIXEL);
-
-			// Get the BITMAPINFO to read bits
-			BITMAPINFO BmpInfo = {};
-			BmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-			BmpInfo.bmiHeader.biWidth = *Width;
-			BmpInfo.bmiHeader.biHeight = -*Height; // Negative height for top-down order
-			BmpInfo.bmiHeader.biPlanes = 1;
-			BmpInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8;
-			BmpInfo.bmiHeader.biCompression = BI_RGB;
-
-			// Get and read bits in the array to verify validity
-			if (GetDIBits(Hdc, IconInfo.hbmColor, 0, *Height, BitsArray.GetData(), &BmpInfo, DIB_RGB_COLORS) == 0)
-			{
-				BitsArray.Empty();
-			}
+			Index = i;
+			ImageSize = EntrySize;
 		}
-
-		// Free the device context
-		ReleaseDC(NULL, Hdc);
 	}
-#endif // _WIN32
 
-	return BitsArray;
+	return Index;
 }
 
 /**
- * Compute the mouse cursor size from its image bits array.
+ * Get the index of the desired frame in array of pictures.
  *
- * @param BitsArray the bits array of the mouse cursor image.
- * @param ImageWidth the width of the mouse cursor image.
- * @param ImageHeight the height of the mouse cursor image.
+ * @param Pictures the array of pictures.
+ * @param SizeData the size informations.
+ * @return The index of the desired frame in array of pictures.
+ * If the desired frame is not founnd, the index of the smallest one is returned.
+ */
+int UMouseCursorSizeHelper::GetIndexOfDesiredFrame(const TArray<FIcondirentry>& Pictures, FSizedata* SizeData)
+{
+	int Index = -1;
+	float CursorBaseSize = GetRegistryValueFloat(REG_CURSOR_SOURCES, REG_KEY_CURSOR_BASE_SIZE, -1);
+	float AppliedDPI = GetDPIScale() / 100.0F;
+
+	if (CursorBaseSize != -1)
+	{
+		float DesiredSize = CursorBaseSize * AppliedDPI;
+		for (int i = 0; i < Pictures.Num(); i++)
+		{
+			if (Pictures[i].bWidth == uint8(DesiredSize) && Pictures[i].bHeight == uint8(DesiredSize))
+			{
+				Index = i;
+				SizeData->isRealSize = true;
+				break;
+			}
+		}
+	}
+	else
+	{
+		Index = GetIndexOfSmallestPicture(Pictures);
+	}
+
+	return Index;
+}
+
+/**
+ * Invert the lines order of an array to iinvert its height.
+ *
+ * @param Array the array to be processed.
+ * @param SizeData the size informations.
+ */
+void UMouseCursorSizeHelper::InvertArrayHeight(TArray<uint32>* Array, const FSizedata& SizeData)
+{
+	TArray<uint32> TempArray;
+	TempArray.Append(*Array);
+
+	for (int y = 0, yInverted = SizeData.height - 1; y < SizeData.height && yInverted >= 0; y++, yInverted--) {
+		for (int x = 0; x < SizeData.width; x++) {
+			(*Array)[y * SizeData.width + x] = TempArray[yInverted * SizeData.width + x];
+		}
+	}
+}
+
+/**
+ * Extract the pixels from the cursor file.
+ *
+ * @param File the file of the cursor icon.
+ * @param BmpHeader the bitmap header with metadatas of the cursor icon.
+ * @param SizeData the size informations.
+ * @return The pixel array of the mouse cursor picture.
+ */
+TArray<uint32> UMouseCursorSizeHelper::ExtractPixels(std::ifstream& File, const FBitmapinfoheader& BmpHeader, FSizedata* SizeData)
+{
+	TArray<uint32> Pixels = {};
+
+	// Validate size and format
+	if (BmpHeader.biBitCount == 32 && BmpHeader.biCompression == BI_RGB) {
+		SizeData->width = BmpHeader.biWidth;
+		SizeData->height = FMath::Abs(BmpHeader.biHeight) / 2; // Half the height is for the mask
+		Pixels.SetNum(SizeData->width * SizeData->height);
+
+		// Read the pixels (colors and alpha channel)
+		File.read(reinterpret_cast<char*>(Pixels.GetData()), Pixels.Num() * sizeof(uint32));
+
+		// Read the mask (1 byte per pixel)
+		int MaskWidth = ((SizeData->width + 31) / 32) * BYTES_PER_PIXEL; // Width rounded to the nearest multiple of 32 bits
+		TArray<uint8> Mask;
+		Mask.SetNum(MaskWidth * SizeData->height);
+		File.read(reinterpret_cast<char*>(Mask.GetData()), Mask.Num());
+
+		// Combine pixels and mask to set transparency
+		for (int y = 0; y < SizeData->height; y++) {
+			for (int x = 0; x < SizeData->width; x++) {
+				int MaskByteIndex = (y * MaskWidth) + (x / 8);
+				int MaskBitIndex = 7 - (x % 8);
+				bool IsTransparent = (Mask[MaskByteIndex] & (1 << MaskBitIndex)) != 0;
+
+				if (IsTransparent) {
+					Pixels[y * SizeData->width + x] = 0; // Completely transparent pixel
+				}
+			}
+		}
+
+		// Invert the height to put the array right side up
+		InvertArrayHeight(&Pixels, *SizeData);
+	}
+
+	return Pixels;
+}
+
+/**
+ * Get the datas of the cursor file
+ *
+ * @param File the file of the cursor icon.
+ * @param Header the header with metadatas of the cursor icon.
+ * @param SizeData the size informations.
+ * @return The pixel array of the mouse cursor picture.
+ */
+TArray<uint32> UMouseCursorSizeHelper::GetCursorFileDatas(std::ifstream& File, const FIcondir& Header, FSizedata* SizeData)
+{
+	TArray<uint32> PixelArray = {};
+
+	// The type of file is a .cur file
+	if (Header.idType == 2)
+	{
+		TArray<FIcondirentry> Pictures;
+		Pictures.SetNum(Header.idCount);
+		File.read(reinterpret_cast<char*>(Pictures.GetData()), Header.idCount * sizeof(FIcondirentry));
+
+		// Read data for the smallest frame of the file
+		int SmallestFrameIndex = GetIndexOfDesiredFrame(Pictures, SizeData);
+		if (SmallestFrameIndex >= 0 && SmallestFrameIndex < Pictures.Num())
+		{
+			FIcondirentry& Entry = Pictures[SmallestFrameIndex];
+			File.seekg(Entry.dwImageOffset, std::ios::beg);
+
+			FBitmapinfoheader BmpHeader;
+			File.read(reinterpret_cast<char*>(&BmpHeader), sizeof(FBitmapinfoheader));
+
+			PixelArray = ExtractPixels(File, BmpHeader, SizeData);
+		}
+	}
+
+	return PixelArray;
+}
+
+/**
+ * Get bits array of mouse cursor image from its BITMAP with Windows library.
+ *
+ * @param SizeData the size informations.
+ * @return The pixel array of the mouse cursor picture.
+ */
+TArray<uint32> UMouseCursorSizeHelper::GetPixelArrayOfCurrentMouseImage(FSizedata* SizeData)
+{
+	TArray<uint32> PixelArray = {};
+	std::string CursorFileName = GetRegistryValueString(REG_CURSOR_SOURCES, REG_KEY_CURSOR_FILE);
+
+	PurifyPath(&CursorFileName);
+	if (!CursorFileName.empty())
+	{
+		std::ifstream File(CursorFileName, std::ios::binary);
+
+		if (!File.fail() && File.is_open()) {
+
+			// Read the header (ICONDIR)
+			FIcondir Header;
+			File.read(reinterpret_cast<char*>(&Header), sizeof(FIcondir));
+
+			PixelArray = GetCursorFileDatas(File, Header, SizeData);
+
+			File.close();
+		}
+	}
+
+	return PixelArray;
+}
+
+/**
+ * Compute the mouse cursor size from its image pixels array.
+ *
+ * @param PixelArray the pixels array of the mouse cursor image.
+ * @param SizeData the size informations.
  * @return The computed original real size of mouse cursor (without scales).
  */
-FVector2f UMouseCursorSizeHelper::ComputeCursorSizeFromBitsArray(const TArray<uint8>& BitsArray, int ImageWidth, int ImageHeight)
+FVector2f UMouseCursorSizeHelper::ComputeCursorSizeFromPixelArray(const TArray<uint32>& PixelArray, const FSizedata& SizeData)
 {
 	FVector2f CursorSize = FVector2f(DEFAULT_ORIGIN_MOUSE_WIDTH, DEFAULT_ORIGIN_MOUSE_HEIGHT);
-	FirstLastIndexesStruct IndexesStruct = InitFirstLastIndexesStruct();
-	float Width = 0;
-	float Height = 0;
 
-	if (&BitsArray != NULL && !BitsArray.IsEmpty())
+	if (!PixelArray.IsEmpty())
 	{
-		for (int y = 0; y < ImageWidth; y++)
-		{
-			IndexesStruct.FirstIndexWidth = 0;
-			IndexesStruct.LastIndexWidth = 0;
-			IndexesStruct.IsFirstIndexWidthFound = false;
+		FFirstlastindexes FirstLastIndexes = InitFirstLastIndexesStruct();
+		float Width = 0;
+		float Height = 0;
 
-			for (int x = 0; x < ImageHeight; x++) {
-				int Index = (y * ImageWidth + x) * BYTES_PER_PIXEL;
+		// Compute the first and last indexes from the valid pixels
+		for (int y = 0; y < SizeData.height; y++) {
+			for (int x = 0; x < SizeData.width; x++) {
+				uint32 Pixel = PixelArray[y * SizeData.width + x];
+				uint8 Alpha = (Pixel >> 24) & 0xFF;
 
-				// Get the pixel color
-				uint8 Blue = BitsArray[Index];
-				uint8 Green = BitsArray[Index + 1];
-				uint8 Red = BitsArray[Index + 2];
-				uint8 Alpha = BitsArray[Index + 3];
-
-				GetFirstAndLastIndexesFromPixel(Blue + Green + Red + Alpha, &IndexesStruct, x, y);
+				GetFirstAndLastIndexesFromPixel(Alpha, &FirstLastIndexes, x, y);
 			}
-
 			// Compute valid width of the line
-			float LineWidth = float(IndexesStruct.LastIndexWidth - IndexesStruct.FirstIndexWidth + 1);
+			float LineWidth = float(FirstLastIndexes.lastIndexWidth - FirstLastIndexes.firstIndexWidth + 1);
 			if (Width < LineWidth)
 			{
 				Width = LineWidth;
@@ -154,7 +287,7 @@ FVector2f UMouseCursorSizeHelper::ComputeCursorSizeFromBitsArray(const TArray<ui
 		}
 
 		// Compute valid Height
-		Height = float(IndexesStruct.LastIndexHeight - IndexesStruct.FirstIndexHeight + 1);
+		Height = float(FirstLastIndexes.lastIndexHeight - FirstLastIndexes.firstIndexHeight + 1);
 		CursorSize = FVector2f(Width, Height);
 	}
 
@@ -171,35 +304,35 @@ FVector2f UMouseCursorSizeHelper::ComputeCursorSizeFromBitsArray(const TArray<ui
  * @param IndexX the index of the current pixel on the line.
  * @param IndexY the index of the current pixel on the column.
  */
-void UMouseCursorSizeHelper::GetFirstAndLastIndexesFromPixel(uint8 Color, FirstLastIndexesStruct* IndexesStruct, int IndexX, int IndexY)
+void UMouseCursorSizeHelper::GetFirstAndLastIndexesFromPixel(const uint8& Alpha, FFirstlastindexes* IndexesStruct, const int& IndexX, const int& IndexY)
 {
-	// If pixel is not 100% transparent and is colored
-	if (Color > 0)
+	// If pixel is not 100% transparent
+	if (Alpha > 0)
 	{
 		// Compute the first and last index where there is a valid pixel in line
-		if (!IndexesStruct->IsFirstIndexWidthFound)
+		if (!IndexesStruct->isFirstIndexWidthFound)
 		{
-			IndexesStruct->FirstIndexWidth = IndexX;
-			IndexesStruct->IsFirstIndexWidthFound = true;
+			IndexesStruct->firstIndexWidth = IndexX;
+			IndexesStruct->isFirstIndexWidthFound = true;
 		}
 		else
 		{
-			IndexesStruct->LastIndexWidth = IndexX;
+			IndexesStruct->lastIndexWidth = IndexX;
 		}
 
 		// Compute the first and last index where there is a valid pixel for height
-		if (IndexY != IndexesStruct->LastYValue)
+		if (IndexY != IndexesStruct->lastYValue)
 		{
-			if (!IndexesStruct->IsFirstIndexHeightFound)
+			if (!IndexesStruct->isFirstIndexHeightFound)
 			{
-				IndexesStruct->FirstIndexHeight = IndexY;
-				IndexesStruct->IsFirstIndexHeightFound = true;
+				IndexesStruct->firstIndexHeight = IndexY;
+				IndexesStruct->isFirstIndexHeightFound = true;
 			}
 			else
 			{
-				IndexesStruct->LastIndexHeight = IndexY;
+				IndexesStruct->lastIndexHeight = IndexY;
 			}
-			IndexesStruct->LastYValue = IndexY;
+			IndexesStruct->lastYValue = IndexY;
 		}
 	}
 }
@@ -224,10 +357,10 @@ void UMouseCursorSizeHelper::ScaleCursorSizeByMouseSystemScale(FVector2f* Cursor
  */
 void UMouseCursorSizeHelper::ScaleCursorSizeByDPI(FVector2f* CursorSize)
 {
-	float DPIScale = GetDPIScale() / 100.0F;
+	float AppliedDPI = GetDPIScale() / 100.0F;
 
-	CursorSize->X *= DPIScale;
-	CursorSize->Y *= DPIScale;
+	CursorSize->X *= AppliedDPI;
+	CursorSize->Y *= AppliedDPI;
 }
 
 /**
@@ -237,7 +370,7 @@ void UMouseCursorSizeHelper::ScaleCursorSizeByDPI(FVector2f* CursorSize)
  */
 float UMouseCursorSizeHelper::GetMouseCursorScale()
 {
-	return GetRegistryValue(REG_ACCESSIBILITY_GROUP, REG_KEY_CURSOR_SIZE, DEFAULT_MOUSE_SCALE);
+	return GetRegistryValueFloat(REG_ACCESSIBILITY_GROUP, REG_KEY_CURSOR_SIZE, DEFAULT_MOUSE_SCALE);
 }
 
 /**
@@ -247,39 +380,40 @@ float UMouseCursorSizeHelper::GetMouseCursorScale()
  */
 float UMouseCursorSizeHelper::GetDPIScale()
 {
-	float AppliedDPI = GetRegistryValue(REG_CURRENT_DPI_SCALE, REG_KEY_APPLIED_DPI, DEFAULT_APPLIED_DPI);
+	float AppliedDPI = GetRegistryValueFloat(REG_CURRENT_DPI_SCALE, REG_KEY_APPLIED_DPI, DEFAULT_APPLIED_DPI);
 
 	return float(DPI_FACTOR) * AppliedDPI;
 }
 
 /**
- * Ceil the Vector2f of float passed as parameter.
+ * Ceil the Vector2f passed as parameter.
  * For example: {3.44F, 10.12F} become {3.0F, 10.0F}.
  *
  * @param Vector2f the Vector2f to ceil.
  */
-void UMouseCursorSizeHelper::CeilPair(FVector2f* Vector2f)
+void UMouseCursorSizeHelper::CeilVector2f(FVector2f* Vector2f)
 {
-	Vector2f->X = ceil(Vector2f->X);
-	Vector2f->Y = ceil(Vector2f->Y);
+	Vector2f->X = FMath::CeilToFloat(Vector2f->X);
+	Vector2f->Y = FMath::CeilToFloat(Vector2f->Y);
 }
 
 /**
- * Get the value of regiistry key passed as parameter.
+ * Get the value in float format of registry key passed as parameter.
  *
  * @param RegLocation the location of the registry key.
  * @param RegKey the registry key to read.
  * @param DefaultValue the default value to make equal the variable if the registry key is not found.
- * @return The value of the registry key if found. The default value otherwise.
+ * @return The value of the registry key in float if found. The default value otherwise.
  */
-float UMouseCursorSizeHelper::GetRegistryValue(LPCWSTR RegLocation, LPCWSTR RegKey, float DefaultValue)
+float UMouseCursorSizeHelper::GetRegistryValueFloat(const LPCSTR& RegLocation, const LPCSTR& RegKey, const float& DefaultValue)
 {
 	float resultValue = DefaultValue;
 
 #ifdef _WIN32
 	DWORD Value = 0;
 	DWORD DataSize = sizeof(Value);
-	long ResultRegCode = RegGetValueW(HKEY_CURRENT_USER, RegLocation, RegKey, RRF_RT_REG_DWORD, NULL, &Value, &DataSize);
+
+	long ResultRegCode = RegGetValueA(HKEY_CURRENT_USER, RegLocation, RegKey, RRF_RT_REG_DWORD, NULL, &Value, &DataSize);
 
 	// If the registry exists and value gotten
 	if (ResultRegCode == ERROR_SUCCESS)
@@ -289,4 +423,127 @@ float UMouseCursorSizeHelper::GetRegistryValue(LPCWSTR RegLocation, LPCWSTR RegK
 #endif // _WIN32
 
 	return resultValue;
+}
+
+/**
+ * Get the value in string format of registry key passed as parameter.
+ *
+ * @param RegLocation the location of the registry key.
+ * @param RegKey the registry key to read.
+ * @return The value of the registry key in string format if found. An empty string otherwise.
+ */
+std::string UMouseCursorSizeHelper::GetRegistryValueString(const LPCSTR& RegLocation, const LPCSTR& RegKey)
+{
+	std::string Value = "";
+
+#ifdef _WIN32
+	HKEY hSubKey;
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, RegLocation, 0, KEY_READ, &hSubKey) == ERROR_SUCCESS)
+	{
+		DWORD type;
+		DWORD size;
+		if (RegQueryValueExA(hSubKey, RegKey, NULL, &type, NULL, &size) == ERROR_SUCCESS)
+		{
+			std::string ValueTemp(size, 0);
+			if (RegQueryValueExA(hSubKey, RegKey, NULL, &type, LPBYTE(ValueTemp.data()), &size) == ERROR_SUCCESS)
+			{
+				Value = ValueTemp;
+			}
+		}
+		RegCloseKey(hSubKey);
+	}
+#endif // _WIN32
+
+	return Value;
+}
+
+/**
+ * Get the value of environment variable.
+ *
+ * @param EnvName the name of the environment variable to read.
+ * @return The value of the environment variable if it exists. An empty string otherwise.
+ */
+std::string UMouseCursorSizeHelper::GetValueOfEnvVariable(const std::string& EnvName)
+{
+	std::string EnvValue = "";
+
+	char buffer[MAX_PATH];
+	DWORD size = GetEnvironmentVariableA(LPCSTR(EnvName.c_str()), buffer, MAX_PATH);
+	if (size != 0) {
+		EnvValue = std::string(buffer);
+	}
+
+	return EnvValue;
+}
+
+/**
+ * Get the key value of all environment variables contained in path.
+ *
+ * @param Path the path in which to look for environment variables.
+ * @return The key value of all environment variables contained in path.
+ */
+std::map<std::string, std::string> UMouseCursorSizeHelper::GetAllEnvNameValueInPath(const std::string& Path)
+{
+	std::map<std::string, std::string> EnvKeyValue = {};
+
+	int count = 0;
+
+	// Count number occurences of '%'
+	for (char c : Path)
+	{
+		count += c == '%';
+	}
+
+	// The number of tags is valid
+	if (count % 2 == 0)
+	{
+		std::string EnvName = "";
+		bool CanWrite = false;
+
+		// Get the variable names in path
+		for (char c : Path)
+		{
+			if (c == '%')
+			{
+				CanWrite = !CanWrite;
+			}
+			else if (CanWrite)
+			{
+				EnvName += c;
+			}
+
+			if (!EnvName.empty() && !CanWrite)
+			{
+				EnvKeyValue.insert({ EnvName, GetValueOfEnvVariable(EnvName) });
+				EnvName = "";
+			}
+		}
+	}
+
+	return EnvKeyValue;
+}
+
+/**
+ * Replace all evironment variables contained in path by their values. This makes the path valid.
+ *
+ * @param Path the path to process.
+ */
+void UMouseCursorSizeHelper::PurifyPath(std::string* Path)
+{
+#ifdef _WIN32
+	std::map<std::string, std::string> EnvKeyValue = GetAllEnvNameValueInPath(*Path);
+
+	for (std::pair<std::string, std::string> EnvPair : EnvKeyValue)
+	{
+		if (!EnvPair.first.empty() && !EnvPair.second.empty())
+		{
+			std::string KeyName = "%" + EnvPair.first + "%";
+			uint32 KeyPosition = Path->find(KeyName);
+			if (KeyPosition >= 0)
+			{
+				Path->replace(KeyPosition, KeyName.size(), EnvPair.second);
+			}
+		}
+	}
+#endif // _WIN32
 }

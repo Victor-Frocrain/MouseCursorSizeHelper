@@ -208,8 +208,8 @@ std::vector<uint32_t> MouseCursorSizeHelper::GetCursorFileDatas(std::ifstream& F
 		int SmallestFrameIndex = GetIndexOfDesiredFrame(Pictures, SizeData);
 		if (SmallestFrameIndex >= 0 && SmallestFrameIndex < Pictures.size())
 		{
-			ICONDIRENTRY& entry = Pictures[SmallestFrameIndex];
-			File.seekg(entry.dwImageOffset, std::ios::beg);
+			ICONDIRENTRY& Entry = Pictures[SmallestFrameIndex];
+			File.seekg(Entry.dwImageOffset, std::ios::beg);
 
 			BITMAPINFOHEADER BmpHeader;
 			File.read(reinterpret_cast<char*>(&BmpHeader), sizeof(BITMAPINFOHEADER));
