@@ -29,8 +29,6 @@ constexpr LPCSTR REG_KEY_CURSOR_FILE = "Arrow";
 constexpr LPCSTR REG_KEY_CURSOR_BASE_SIZE = "CursorBaseSize";
 constexpr LPCSTR REG_ACCESSIBILITY_GROUP = "Software\\Microsoft\\Accessibility";
 constexpr LPCSTR REG_KEY_CURSOR_SIZE = "CursorSize";
-constexpr LPCSTR REG_CURRENT_DPI_SCALE = "Control Panel\\Desktop\\WindowMetrics";
-constexpr LPCSTR REG_KEY_APPLIED_DPI = "AppliedDPI";
 constexpr int BYTES_PER_PIXEL = 4;
 constexpr double DPI_FACTOR = 100.0 / DEFAULT_APPLIED_DPI;
 
@@ -112,6 +110,7 @@ private:
     static void ScaleCursorSizeByMouseSystemScale(std::pair<float, float>* CursorSize);
     static void ScaleCursorSizeByDPI(std::pair<float, float>* CursorSize);
     static float GetMouseCursorScale();
+    static float GetDPIScaleOfWindowsSystem();
     static float GetDPIScale();
     static void CeilPair(std::pair<float, float>* Pair);
     static float GetRegistryValueFloat(const LPCSTR& RegLocation, const LPCSTR& RegKey, const float& DefaultValue);

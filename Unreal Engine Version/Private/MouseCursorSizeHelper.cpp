@@ -113,7 +113,8 @@ int UMouseCursorSizeHelper::GetIndexOfDesiredFrame(const TArray<FIcondirentry>& 
 			}
 		}
 	}
-	else
+
+	if (Index == -1)
 	{
 		Index = GetIndexOfSmallestPicture(Pictures);
 	}
@@ -374,13 +375,43 @@ float UMouseCursorSizeHelper::GetMouseCursorScale()
 }
 
 /**
- * Get the DPI defined on the system, using registry.
+ * Get the DPI defined for the main monitor of system.
+ *
+ * @return The DPI defined on the system for the main monitor.
+ */
+float UMouseCursorSizeHelper::GetDPIScaleOfWindowsSystem()
+{
+	int DpiX = int(DEFAULT_APPLIED_DPI);
+	int DpiY = int(DEFAULT_APPLIED_DPI);
+
+#ifdef _WIN32
+
+	// Indicates that the application is DPI aware
+	SetProcessDPIAware();
+
+	// Get the device context for the primary display
+	HDC HdcScreen = GetDC(NULL);
+	if (HdcScreen != NULL) {
+		DpiX = GetDeviceCaps(HdcScreen, LOGPIXELSX);
+		DpiY = GetDeviceCaps(HdcScreen, LOGPIXELSY);
+
+		// Free the device context from the primary screen
+		ReleaseDC(NULL, HdcScreen);
+	}
+
+#endif // _WIN32
+
+	return float(DpiX);
+}
+
+/**
+ * Get the DPI defined on the system.
  *
  * @return The DPI defined on the system.
  */
 float UMouseCursorSizeHelper::GetDPIScale()
 {
-	float AppliedDPI = GetRegistryValueFloat(REG_CURRENT_DPI_SCALE, REG_KEY_APPLIED_DPI, DEFAULT_APPLIED_DPI);
+	float AppliedDPI = GetDPIScaleOfWindowsSystem();
 
 	return float(DPI_FACTOR) * AppliedDPI;
 }
